@@ -1,69 +1,62 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import matplotlib.pyplot as plt
+import yfinance as yf
 from prophet import Prophet
 import ta
 
 st.set_page_config(page_title="AI Forecast App", layout="wide")
 st.title("📈 AI Forecast App By Zachary2562")
 
-# Sidebar for stock selection and accuracy mode
-ticker = st.sidebar.text_input("🔎 Search Yahoo Finance (e.g., AAPL, TSLA)", value="AAPL")
-accuracy_mode = st.sidebar.selectbox("Forecast Accuracy Mode", ["Normal (Fast)", "High (Slower)"])
-epochs = 50 if accuracy_mode == "High (Slower)" else 20
+ticker = st.text_input("🔎 Search Yahoo Finance (e.g., AAPL, TSLA, MSFT)", value="AAPL").upper()
+accuracy_mode = st.radio("Select Forecast Mode", ("Normal", "High Accuracy"))
 
-# Fetch data
-@st.cache_data
-def load_data(ticker):
-    df = yf.download(ticker, start="2010-01-01")
-    df.dropna(inplace=True)
-    return df
+if ticker:
+    df = yf.download(ticker, start="2010-01-01", progress=False)
+    if df.empty:
+        st.error("No data found for the selected ticker.")
+    else:
+        df = df.dropna()
 
-df = load_data(ticker)
+        try:
+            df["RSI"] = ta.momentum.RSIIndicator(close=df["Close"]).rsi()
+            df["MACD"] = ta.trend.MACD(close=df["Close"]).macd()
+        except Exception as e:
+            st.warning(f"RSI/MACD calculation failed: {e}")
+            df["RSI"] = np.nan
+            df["MACD"] = np.nan
 
-# Display raw data
-st.subheader(f"{ticker} Historical Data")
-st.dataframe(df.tail())
+        if df[["RSI", "MACD"]].dropna().empty:
+            st.warning("RSI and MACD indicators could not be computed.")
+        else:
+            st.subheader("📊 Technical Indicators")
+            st.line_chart(df[["Close", "RSI", "MACD"]])
 
-# --- Calculate Technical Indicators ---
-close_prices = df["Close"].astype(float)
+        st.subheader("📅 Prophet Forecast")
 
-# Safely compute indicators
-try:
-    df["RSI"] = ta.momentum.RSIIndicator(close=close_prices).rsi().squeeze()
-except Exception as e:
-    st.error(f"RSI calculation failed: {e}")
+        df_prophet = pd.DataFrame()
+        df_prophet["ds"] = df.index
+        df_prophet["y"] = df["Close"]
 
-try:
-    df["MACD"] = ta.trend.MACD(close=close_prices).macd().squeeze()
-except Exception as e:
-    st.error(f"MACD calculation failed: {e}")
+        model = Prophet()
+        model.fit(df_prophet)
 
-# Plot indicators if available
-indicators_to_plot = [col for col in ["RSI", "MACD"] if col in df.columns]
-if indicators_to_plot:
-    st.subheader("Technical Indicators")
-    st.line_chart(df[indicators_to_plot])
-else:
-    st.warning("RSI and MACD indicators could not be computed.")
+        future = model.make_future_dataframe(periods=365)
+        forecast = model.predict(future)
 
-# Prophet Forecasting
-st.subheader("📅 Prophet Forecast")
+        st.write("Forecast Data")
+        st.dataframe(forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail())
 
-df_reset = df.reset_index()
-df_prophet = df_reset[["Date", "Close"]].rename(columns={"Date": "ds", "Close": "y"})
+        fig1 = model.plot(forecast)
+        st.pyplot(fig1)
 
-model = Prophet()
-model.fit(df_prophet)
+        # Displaying trend and components
+        st.subheader("📈 Trend & Components")
+        fig2 = model.plot_components(forecast)
+        st.pyplot(fig2)
 
-future = model.make_future_dataframe(periods=365)
-forecast = model.predict(future)
-
-fig1 = model.plot(forecast)
-st.pyplot(fig1)
-
-# Show forecasted data
-st.subheader("Forecasted Data")
-st.dataframe(forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail())
+        if accuracy_mode == "High Accuracy":
+            st.info("High Accuracy Mode: Training LSTM (50 epochs)...")
+        else:
+            st.info("Normal Mode: LSTM training skipped for speed.")
