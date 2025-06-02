@@ -17,6 +17,7 @@ else:
 
 selected_ticker = st.sidebar.selectbox("Select an option", ticker_list)
 custom_ticker = st.sidebar.text_input("🔎 Search Yahoo Finance (e.g., NVDA, SPY, GOLD)", "")
+accuracy_mode = st.sidebar.checkbox('🎯 High Accuracy Mode (LSTM x50 Epochs)', value=False)
 ticker = custom_ticker.upper() if custom_ticker else selected_ticker
 
 # Load and preprocess data
@@ -32,7 +33,7 @@ st.line_chart(df["Close"])
 
 # Add Technical Indicators
 df["RSI"] = ta.momentum.RSIIndicator(close=df["Close"].squeeze()).rsi()
-df["MACD"] = ta.trend.MACD(close=df["Close"]).macd()
+df["MACD"] = ta.trend.MACD(close=df["Close"].squeeze()).macd().squeeze()
 st.line_chart(df[["RSI", "MACD"]])
 
 # Prophet Forecast
