@@ -3,10 +3,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import datetime
 import matplotlib.pyplot as plt
 import requests
+import os
 
 # --- Technical indicators ---
 from ta.momentum import RSIIndicator
@@ -31,57 +31,56 @@ import fuelfinance as ff
 @st.cache_data(show_spinner=False)
 def load_data(ticker_symbol):
     """
-    Attempts to fetch historical data for ticker_symbol from Yahoo Finance.
-    If Yahoo returns HTTP 429, reports “rate_limited”.
-    Returns a tuple: (df, status) where status is one of:
-      - "ok"           → df contains real data
-      - "rate_limited" → Yahoo returned 429 or yfinance produced no rows
-      - "error"        → some other exception occurred
+    Fetches full historical daily data for `ticker_symbol` via Alpha Vantage.
+    Returns:
+      - df:      Pandas DataFrame of date/open/high/low/close/volume
+      - status: "ok"           → df contains real data
+                "rate_limited" → AV returned a note or no data
+                "error"        → network or JSON parse issue
     """
     import pandas as pd
-    import yfinance as yf
     import requests
 
     t = ticker_symbol.strip().upper()
     if not t:
         return pd.DataFrame(), "error"
 
-    # 1) Quick pre-check via requests.get to detect HTTP 429
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 429:
-            # Rate-limited by Yahoo
-            return pd.DataFrame(), "rate_limited"
-    except Exception:
-        # If this simple GET fails, ignore and let yfinance attempt the fetch
-        pass
-
-    # 2) Use yfinance to download max history
-    try:
-        ticker_obj = yf.Ticker(t)
-        df = ticker_obj.history(period="max")
-        df.reset_index(inplace=True)
-        df.rename(
-            columns={
-                "Date":   "date",
-                "Close":  "close",
-                "Open":   "open",
-                "High":   "high",
-                "Low":    "low",
-                "Volume": "volume",
-            },
-            inplace=True
-        )
-    except Exception as e:
-        print(f"yfinance exception for {t}: {e}")
+    API_KEY = os.getenv("AV_API_KEY", "")
+    if not API_KEY:
         return pd.DataFrame(), "error"
 
-    # 3) If yfinance returned an empty DataFrame, treat it as rate-limited/no data
-    if df.empty:
+    url = (
+        "https://www.alphavantage.co/query?"
+        f"function=TIME_SERIES_DAILY_ADJUSTED&symbol={t}"
+        f"&outputsize=full&apikey={API_KEY}"
+    )
+
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+    except Exception as e:
+        print(f"Alpha Vantage request exception for {t}: {e}")
+        return pd.DataFrame(), "error"
+
+    # If AV responds with a "Note" field (rate‐limit) or "Error Message" (invalid symbol)
+    if "Note" in data or "Error Message" in data or "Time Series (Daily)" not in data:
         return pd.DataFrame(), "rate_limited"
 
-    # 4) Otherwise, return the real DataFrame
+    ts = data["Time Series (Daily)"]
+    df = pd.DataFrame.from_dict(ts, orient="index", dtype=float)
+    df.index = pd.to_datetime(df.index)
+    df.sort_index(inplace=True)
+
+    df = df.rename(
+        columns={
+            "1. open":  "open",
+            "2. high":  "high",
+            "3. low":   "low",
+            "4. close": "close",
+            "6. volume": "volume",
+        }
+    )
+    df = df.reset_index().rename(columns={"index": "date"})
     return df, "ok"
 
 # ---------------------------- UI SETUP -----------------------------------
@@ -123,8 +122,8 @@ if custom_ticker:
 else:
     ticker = selected_dropdown
 
-# ─── Sidebar: Date Range (fixed) ────────────────────────────────────────
-START_DATE = "2010-01-01"
+# ─── Sidebar: Date Range (fixed but not used directly; kept for labeling) ─────────
+START_DATE = "2010-01-01"  # retained for UI consistency; actual fetch is "full"
 END_DATE = datetime.date.today().strftime("%Y-%m-%d")
 
 # ─── Sidebar: LSTM Hyperparameters ─────────────────────────────────────
@@ -159,25 +158,25 @@ run_button = st.sidebar.button("▶ Run Forecast")
 # ─── Main: Run Forecast Pipeline ───────────────────────────────────────
 if run_button:
 
-    # 1️⃣ Load historical data with 429 handling
+    # 1️⃣ Load historical data with Alpha Vantage (full history)
     data_load_state = st.text("Loading data...")
     df, status = load_data(ticker)
 
     if status == "rate_limited":
         st.error(
-            "⚠️ Yahoo Finance is rate-limiting requests (HTTP 429).  \n"
-            "Please wait 1–2 minutes, then click ‘Run Forecast’ again."
+            "⚠️ Alpha Vantage is rate-limiting requests or returned no data.  \n"
+            "Please wait a minute and try again, or try a different ticker."
         )
         st.stop()
 
     if status == "error":
         st.error(
             f"❌ An error occurred fetching data for “{ticker}”.  \n"
-            "Check your ticker symbol or your internet connection."
+            "Check your AV_API_KEY or network connection."
         )
         st.stop()
 
-    # At this point, status == "ok" and df is non-empty
+    # At this point, status == "ok" and df contains full history
     data_load_state.text(f"Data loaded successfully! ({len(df)} rows)")
 
     # 2️⃣ Compute technical indicators
@@ -315,7 +314,7 @@ if run_button:
         lstm_forecasts_scaled.append(pred_scaled)
         # Build next sequence: shift window, append new predicted value for “close”
         last_row = cur_seq[0, -1, :].copy()  # shape=(features,)
-        last_row[0] = pred_scaled  # assuming “close” is the first feature; adjust if different
+        last_row[0] = pred_scaled  # assuming “close” is the first feature
         next_seq = np.concatenate([cur_seq[0, 1:], last_row.reshape(1, -1)], axis=0)
         cur_seq = next_seq.reshape(1, LOOKBACK, len(feature_cols))
 
