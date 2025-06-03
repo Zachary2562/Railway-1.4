@@ -1,9 +1,10 @@
 streamlit
+yfinance
 pandas
 numpy
 matplotlib
-yfinance
-prophet
-scikit-learn
 ta
+prophet
 tensorflow
+scikit-learn
+fuelfinance
