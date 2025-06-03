@@ -1,20 +1,13 @@
-# ─── Core numerical/build tools ──────────────────────────────────────────────
 numpy==1.24.4
 Cython>=0.22
 
-# ─── Data & plotting libraries (prebuilt wheels for 3.11) ─────────────────────
 pandas==2.0.3
 matplotlib==3.7.1
 yfinance==0.2.24
 
-# ─── Streamlit & ML frameworks ────────────────────────────────────────────────
 streamlit==1.24.1
 scikit-learn==1.3.2
 tensorflow-cpu==2.12.0
 
-# ─── Prophet & PyStan (need NumPy + Cython already present) ──────────────────
 pystan==2.19.1.1
 prophet==1.1.4
-
-# ─── Technical analysis (pick a version with a wheel for 3.11) ────────────────
-ta==0.10.1
