@@ -25,6 +25,21 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 # --- Fuelfinance (basic risk analytics) ---
 import fuelfinance as ff
+import streamlit as st
+import requests
+
+st.title("🔍 Connectivity Check")
+
+try:
+    r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/AAPL", timeout=5)
+    if r.status_code == 200:
+        st.success("✅ Able to reach Yahoo Finance API!")
+    else:
+        st.error(f"❌ Yahoo Finance returned status code {r.status_code}")
+except Exception as e:
+    st.error(f"❌ Could not reach Yahoo Finance: {e}")
+
+st.stop()  # Stop here for now; we just want to see the connectivity result
 
 # ---------------------------- UI SETUP ----------------------------
 st.set_page_config(page_title="AI Forecast App", layout="wide")
