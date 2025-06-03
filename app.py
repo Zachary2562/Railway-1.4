@@ -346,7 +346,7 @@ if run_button:
     future_dates = prophet_forecast_df["date"]
     ax.plot(future_dates, prophet_vals,      label="Prophet Forecast", linestyle="--")
     ax.plot(future_dates, lstm_forecasts,    label="LSTM Forecast",    linestyle=":")
-    ax.plot(future_dates, ensemble_forecast, label="Ensemble Forecast", linewidth=2)
+    ax.plot(future_dates, ensemble_forecast, label="Ensemble Forecast", width=2)
     ax.set_xlabel("Date")
     ax.set_ylabel("Price")
     ax.legend()
