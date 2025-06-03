@@ -39,24 +39,39 @@ mode = st.sidebar.radio(
     help="Regular: use default hyperparameters. Advanced: tweak everything manually."
 )
 
-# ─── Sidebar: Ticker Dropdown ───────────────────────────────────────
-st.sidebar.header("🔍 Select a Ticker")
+# ─── Sidebar: Ticker Dropdown & Search ─────────────────────────────
+st.sidebar.header("🔍 Select or Search a Ticker")
+
 # Preloaded list of ~50 popular tickers
 PRELOADED_TICKERS = [
-    "AAPL", "MSFT", "GOOG", "AMZN", "FB", "TSLA", "NVDA", "BRK-B", "JPM", "V", 
+    "AAPL", "MSFT", "GOOG", "AMZN", "FB", "TSLA", "NVDA", "BRK-B", "JPM", "V",
     "UNH", "HD", "PG", "MA", "BAC", "XOM", "DIS", "VZ", "ADBE", "NFLX",
     "INTC", "PFE", "KO", "CMCSA", "PEP", "T", "CSCO", "ABT", "CVX", "NKE",
     "MRK", "WMT", "CRM", "ORCL", "ACN", "MCD", "DHR", "COST", "MDT", "LLY",
     "TXN", "QCOM", "NEE", "AMGN", "HON", "IBM", "BMY", "AVGO", "UNP", "SBUX"
 ]
-ticker = st.sidebar.selectbox("Pick one:", PRELOADED_TICKERS)
+
+# 1) User picks from dropdown
+selected_dropdown = st.sidebar.selectbox("Pick one:", PRELOADED_TICKERS)
+
+# 2) If the desired ticker isn't in the list, allow a free-form search
+custom_ticker = st.sidebar.text_input(
+    "Or enter a custom ticker (e.g. AAPL)",
+    value="",
+    help="Type a symbol not in the dropdown."
+)
+
+# Determine which ticker to use: custom overrides dropdown if non-empty
+if custom_ticker:
+    ticker = custom_ticker.strip().upper()
+else:
+    ticker = selected_dropdown
 
 # ─── Sidebar: Date Range (fixed) ────────────────────────────────────
 START_DATE = "2010-01-01"
 END_DATE = datetime.date.today().strftime("%Y-%m-%d")
 
 # ─── Sidebar: LSTM Hyperparameters ─────────────────────────────────
-# We’ll either use defaults (Regular) or show all controls (Advanced).
 if mode == "Regular":
     n_lstm_layers = 1
     lstm_units    = 64
@@ -90,9 +105,9 @@ if run_button:
     @st.cache_data(show_spinner=False)
     def load_data(ticker_symbol):
         df = yf.download(
-            ticker_symbol, 
-            start=START_DATE, 
-            end=END_DATE, 
+            ticker_symbol,
+            start=START_DATE,
+            end=END_DATE,
             progress=False
         )
         df.reset_index(inplace=True)
@@ -145,8 +160,10 @@ if run_button:
 
     # 3️⃣ Show a preview
     st.dataframe(
-        df_ind[["date","open","high","low","close","volume",
-                "rsi","macd","bb_mavg","bb_hband","bb_lband","vwap"]].tail(10)
+        df_ind[[
+            "date","open","high","low","close","volume",
+            "rsi","macd","bb_mavg","bb_hband","bb_lband","vwap"
+        ]].tail(10)
     )
 
     # 4️⃣ Define features (X) and target (y)
@@ -317,7 +334,7 @@ if run_button:
     # 12️⃣ Data export options
     st.subheader("🗒️ Download Data & Forecasts")
     export_df = pd.DataFrame({
-        "date":            future_dates,
+        "date":             future_dates,
         "prophet_forecast": prophet_vals,
         "lstm_forecast":    lstm_forecasts,
         "ensemble_forecast": ensemble_forecast
