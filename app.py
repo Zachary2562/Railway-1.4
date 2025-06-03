@@ -27,6 +27,33 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 # --- Fuelfinance (basic risk analytics) ---
 import fuelfinance as ff
 
+# ---------------------------- DEBUGGING CHECKS -----------------------------
+# (These run automatically each time the app loads, so you can see immediately
+# if your API key is read and if Alpha Vantage is reachable. You can remove them
+# once everything is confirmed to work.)
+
+st.set_page_config(page_title="AI Forecast App", layout="wide")
+st.title("📈 AI Forecast App by Zachary2562")
+
+# 1) Show whether AV_API_KEY is present in the environment
+api_key = os.getenv("AV_API_KEY")
+st.write("🔑 Debug: AV_API_KEY set?", "Yes" if api_key else "No")
+
+# 2) Try a simple GET to Alpha Vantage (no valid key needed, just tests connectivity).
+#    We call an endpoint with a bogus key so we don't consume a real API call.
+try:
+    test_resp = requests.get(
+        "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol=IBM&apikey=INVALIDKEY",
+        timeout=5
+    )
+    st.write("🌐 Debug: Alpha Vantage reachability status code:", test_resp.status_code)
+    # 200 or 400+ means “we reached AV,”  timeout/exception means “no network.”
+except Exception as e:
+    st.write("🌐 Debug: Could not reach Alpha Vantage at all:", e)
+
+st.markdown("---")  # separator
+# ---------------------------------------------------------------------------
+
 
 # ------------------------------- Load Data --------------------------------
 @st.cache_data(show_spinner=False)
@@ -106,8 +133,7 @@ def load_data(ticker_symbol):
 
 
 # ---------------------------- UI SETUP -----------------------------------
-st.set_page_config(page_title="AI Forecast App", layout="wide")
-st.title("📈 AI Forecast App by Zachary2562")
+# (We already set page config and title above for debugging output.)
 
 # ─── Sidebar: Mode Selection ─────────────────────────────────────────────
 st.sidebar.header("⚙️ Mode Selection")
@@ -184,7 +210,8 @@ if run_button:
     if status == "error":
         st.error(
             f"❌ Could not fetch data for “{ticker}”.  \n"
-            "Check your AV_API_KEY or network connection."
+            "– Make sure AV_API_KEY is set (see debug above).  \n"
+            "– Ensure the container has outbound HTTPS (port 443) access."
         )
         st.stop()
 
