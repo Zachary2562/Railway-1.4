@@ -13,7 +13,7 @@ import datetime
 import matplotlib.pyplot as plt
 import requests
 
-# ── TA technical indicators (restored imports) ───────────────────────
+# ── TA technical indicators ───────────────────────────────────────────
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from ta.volatility import BollingerBands
@@ -326,8 +326,9 @@ if run_button:
     ).flatten()
 
     # 8️⃣ Combine Prophet & LSTM forecasts
-    prophet_vals     = prophet_forecast_df["prophet_yhat"].values[:forecast_days]
-    ensemble_forecast = (prophet_vals + lstm_forecasts) / 2
+    prophet_vals      = prophet_forecast_df["prophet_yhat"].values[:forecast_days]
+    lstm_vals         = lstm_forecasts
+    ensemble_forecast = (prophet_vals + lstm_vals) / 2
 
     # 9️⃣ Backtesting on test set
     st.subheader("📊 Backtesting Metrics (Test Set)")
@@ -344,17 +345,69 @@ if run_button:
     st.write(f"• Prophet MAPE: {prop_mape:.2%}, RMSE: {prop_rmse:.3f}")
     st.write(f"• LSTM    MAPE: {lstm_mape:.2%}, RMSE: {lstm_rmse:.3f}")
 
-    # 10️⃣ Plot final forecasts vs historical
+    # 10️⃣ Plot final forecasts vs historical (all lines on one chart, yearly x-axis)
     st.subheader("📈 Forecast Comparison Plot")
-    fig2, ax2 = plt.subplots(figsize=(10, 5))
-    ax2.plot(df_ind["date"], df_ind["close"], label="Historical Close", color="black")
+
+    # Convert to datetime64 for proper plotting
+    df_ind["date"] = pd.to_datetime(df_ind["date"])
+    prophet_forecast_df["date"] = pd.to_datetime(prophet_forecast_df["date"])
+
+    hist_dates   = df_ind["date"]
+    hist_close   = df_ind["close"].values
+
     future_dates = prophet_forecast_df["date"]
-    ax2.plot(future_dates, prophet_vals,      label="Prophet Forecast", linestyle="--")
-    ax2.plot(future_dates, lstm_forecasts,    label="LSTM Forecast",    linestyle=":")
-    ax2.plot(future_dates, ensemble_forecast, label="Ensemble Forecast", linewidth=2)
-    ax2.set_xlabel("Date")
-    ax2.set_ylabel("Price")
-    ax2.legend()
+    prophet_vals = prophet_forecast_df["prophet_yhat"].values[:forecast_days]
+    lstm_vals    = lstm_vals  # from above
+    ensemble_vals = ensemble_forecast  # from above
+
+    import matplotlib.dates as mdates
+
+    fig2, ax2 = plt.subplots(figsize=(10, 5))
+
+    # 1) Historical close in black
+    ax2.plot(hist_dates, hist_close, color="black", linewidth=1.5, label="Historical Close")
+
+    # 2) Prophet forecast in blue dashed
+    ax2.plot(
+        future_dates,
+        prophet_vals,
+        color="tab:blue",
+        linestyle="--",
+        linewidth=1.5,
+        label="Prophet Forecast"
+    )
+
+    # 3) LSTM forecast in orange dotted
+    ax2.plot(
+        future_dates,
+        lstm_vals,
+        color="tab:orange",
+        linestyle=":",
+        linewidth=1.5,
+        label="LSTM Forecast"
+    )
+
+    # 4) Ensemble (average) forecast in red solid
+    ax2.plot(
+        future_dates,
+        ensemble_vals,
+        color="tab:red",
+        linestyle="-",
+        linewidth=2,
+        label="Ensemble Forecast"
+    )
+
+    ax2.set_title(f"Price Projection for {ticker}", fontsize=14)
+    ax2.set_xlabel("Year", fontsize=12)
+    ax2.set_ylabel("Price (USD)", fontsize=12)
+
+    # Yearly x-axis formatting
+    ax2.xaxis.set_major_locator(mdates.YearLocator())
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    fig2.autofmt_xdate()
+
+    ax2.grid(which="major", linestyle="--", linewidth=0.5, alpha=0.4)
+    ax2.legend(loc="upper left", fontsize=9)
     st.pyplot(fig2)
 
     # 11️⃣ Fuelfinance risk analytics
@@ -373,8 +426,8 @@ if run_button:
     export_df = pd.DataFrame({
         "date":              future_dates,
         "prophet_forecast":  prophet_vals,
-        "lstm_forecast":     lstm_forecasts,
-        "ensemble_forecast": ensemble_forecast
+        "lstm_forecast":     lstm_vals,
+        "ensemble_forecast": ensemble_vals
     })
     export_csv = export_df.to_csv(index=False).encode("utf-8")
     st.download_button(
