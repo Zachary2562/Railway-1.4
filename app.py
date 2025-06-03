@@ -27,45 +27,15 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 # --- Fuelfinance (basic risk analytics) ---
 import fuelfinance as ff
 
-# ---------------------------- DEBUGGING CHECKS -----------------------------
-# (These run automatically each time the app loads, so you can see immediately
-# if your API key is read and if Alpha Vantage is reachable. You can remove them
-# once everything is confirmed to work.)
 
-st.set_page_config(page_title="AI Forecast App", layout="wide")
-st.title("📈 AI Forecast App by Zachary2562")
-
-# 1) Show whether AV_API_KEY is present in the environment
-api_key = os.getenv("AV_API_KEY")
-st.write("🔑 Debug: AV_API_KEY set?", "Yes" if api_key else "No")
-
-# 2) Try a simple GET to Alpha Vantage (no valid key needed, just tests connectivity).
-#    We call an endpoint with a bogus key so we don't consume a real API call.
-try:
-    test_resp = requests.get(
-        "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol=IBM&apikey=INVALIDKEY",
-        timeout=5
-    )
-    st.write("🌐 Debug: Alpha Vantage reachability status code:", test_resp.status_code)
-    # 200 or 400+ means “we reached AV,”  timeout/exception means “no network.”
-except Exception as e:
-    st.write("🌐 Debug: Could not reach Alpha Vantage at all:", e)
-
-st.markdown("---")  # separator
-# ---------------------------------------------------------------------------
-
-
-# ------------------------------- Load Data --------------------------------
+# ------------------------------- Load Data (Tiingo) --------------------------------
 @st.cache_data(show_spinner=False)
 def load_data(ticker_symbol):
     """
-    1) Try to fetch the full history (all daily data) via Alpha Vantage.
-    2) If that call returns anything other than "ok" (rate_limited or error),
-       fall back to compact (≈ last 100 days).
+    Fetches up to the last 10 years of daily OHLCV for `ticker_symbol` via Tiingo.
     Returns (df, status):
-      - status == "ok"      → df contains full history (all available bars).
-      - status == "partial" → full was rate-limited or errored, df contains ~100 most recent days.
-      - status == "error"   → both full and compact failed (network/API key error or invalid symbol).
+      - status == "ok"    → df contains actual Tiingo data (date/open/high/low/close/volume).
+      - status == "error" → network issue, API key missing/invalid, or no data for symbol.
     """
     import pandas as pd
     import requests
@@ -75,65 +45,50 @@ def load_data(ticker_symbol):
     if not t:
         return pd.DataFrame(), "error"
 
-    API_KEY = os.getenv("AV_API_KEY", "")
-    if not API_KEY:
+    TIINGO_KEY = os.getenv("TIINGO_API_KEY", "")
+    if not TIINGO_KEY:
         return pd.DataFrame(), "error"
 
-    def _fetch(outputsize_flag: str):
-        """
-        Internal helper: call Alpha Vantage with outputsize = 'full' or 'compact'.
-        Returns (df, "ok") on success,
-                (None, "rate_limited") if AV returns a "Note" or "Error Message",
-                (None, "error") on network/JSON errors.
-        """
-        url = (
-            "https://www.alphavantage.co/query?"
-            f"function=TIME_SERIES_DAILY_ADJUSTED&symbol={t}"
-            f"&outputsize={outputsize_flag}&apikey={API_KEY}"
-        )
-        try:
-            r = requests.get(url, timeout=10)
-            data = r.json()
-        except Exception as e:
-            print(f"[AlphaV Fetch Error] {t} ({outputsize_flag}): {e}")
-            return None, "error"
+    # Calculate date 10 years ago (ISO format)
+    ten_years_ago = (pd.Timestamp.today() - pd.DateOffset(years=10)).date().isoformat()
 
-        if "Note" in data or "Error Message" in data or "Time Series (Daily)" not in data:
-            return None, "rate_limited"
+    url = (
+        f"https://api.tiingo.com/tiingo/daily/{t}/prices"
+        f"?startDate={ten_years_ago}&format=json&token={TIINGO_KEY}"
+    )
 
-        ts = data["Time Series (Daily)"]
-        df_temp = pd.DataFrame.from_dict(ts, orient="index", dtype=float)
-        df_temp.index = pd.to_datetime(df_temp.index)
-        df_temp.sort_index(inplace=True)
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+    except Exception as e:
+        print(f"[Tiingo Fetch Error] {t}: {e}")
+        return pd.DataFrame(), "error"
 
-        df_temp = df_temp.rename(
-            columns={
-                "1. open":   "open",
-                "2. high":   "high",
-                "3. low":    "low",
-                "4. close":  "close",
-                "6. volume": "volume",
-            }
-        )
-        df_temp = df_temp.reset_index().rename(columns={"index": "date"})
-        return df_temp, "ok"
+    # If response is not a non-empty list, something went wrong (invalid symbol or no data)
+    if not isinstance(data, list) or len(data) == 0:
+        return pd.DataFrame(), "error"
 
-    # 1) Attempt to fetch FULL history
-    df_full, status_full = _fetch("full")
-    if status_full == "ok":
-        return df_full, "ok"
+    # Convert to DataFrame and rename columns to match the rest of the pipeline
+    df = pd.DataFrame(data)
+    df = df.rename(
+        columns={
+            "date":   "date",
+            "open":   "open",
+            "high":   "high",
+            "low":    "low",
+            "close":  "close",
+            "volume": "volume",
+        }
+    )
+    # Convert “date” to pandas datetime (only date part)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
 
-    # 2) If FULL was rate-limited or errored, fall back to COMPACT (~100 days)
-    df_compact, status_compact = _fetch("compact")
-    if status_compact == "ok":
-        return df_compact, "partial"
-
-    # 3) If both full and compact failed, return error
-    return pd.DataFrame(), "error"
+    return df, "ok"
 
 
 # ---------------------------- UI SETUP -----------------------------------
-# (We already set page config and title above for debugging output.)
+st.set_page_config(page_title="AI Forecast App", layout="wide")
+st.title("📈 AI Forecast App by Zachary2562")
 
 # ─── Sidebar: Mode Selection ─────────────────────────────────────────────
 st.sidebar.header("⚙️ Mode Selection")
@@ -168,7 +123,7 @@ custom_ticker = st.sidebar.text_input(
 ticker = custom_ticker.strip().upper() if custom_ticker else selected_dropdown
 
 # ─── Sidebar: Date Range (for labeling) ─────────────────────────────────
-START_DATE = "2010-01-01"  # label only; actual fetch is “full” or fallback
+START_DATE = "2010-01-01"  # UI label only; actual fetch is last 10 years
 END_DATE = datetime.date.today().strftime("%Y-%m-%d")
 
 # ─── Sidebar: LSTM Hyperparameters ─────────────────────────────────────
@@ -200,29 +155,23 @@ forecast_days  = forecast_years * 252  # Approximate trading days per year
 # ─── Sidebar: Run Button ───────────────────────────────────────────────
 run_button = st.sidebar.button("▶ Run Forecast")
 
+
 # ─── Main: Run Forecast Pipeline ───────────────────────────────────────
 if run_button:
 
-    # 1️⃣ Load historical data via Alpha Vantage
+    # 1️⃣ Load historical data via Tiingo (last 10 years)
     data_load_state = st.text("Loading data...")
     df, status = load_data(ticker)
 
     if status == "error":
         st.error(
             f"❌ Could not fetch data for “{ticker}”.  \n"
-            "– Make sure AV_API_KEY is set (see debug above).  \n"
-            "– Ensure the container has outbound HTTPS (port 443) access."
+            "– Make sure TIINGO_API_KEY is set correctly in Railway Variables.  \n"
+            "– Check that the symbol exists on Tiingo."
         )
         st.stop()
 
-    if status == "partial":
-        st.warning(
-            "⚠️ Full historical data was rate-limited or errored.  \n"
-            "Displaying the last ~100 trading days only."
-        )
-        st.success(f"Loaded {len(df)} rows (compact).")
-    else:  # status == "ok"
-        st.success(f"Data loaded successfully! ({len(df)} rows of full history)")
+    st.success(f"Data loaded successfully! ({len(df)} rows)")
 
     # 2️⃣ Compute technical indicators
     st.subheader("🔧 Computing Technical Indicators")
