@@ -13,7 +13,27 @@ import datetime
 import matplotlib.pyplot as plt
 import requests
 
-# ----------------------- Load Data (Tiingo) -----------------------------
+# ── TA technical indicators (restored imports) ───────────────────────
+from ta.momentum import RSIIndicator
+from ta.trend import MACD
+from ta.volatility import BollingerBands
+from ta.volume import VolumeWeightedAveragePrice
+
+# ── Prophet ──────────────────────────────────────────────────────────
+from prophet import Prophet
+
+# ── TensorFlow / Keras (LSTM) ────────────────────────────────────────
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
+
+# ── Fuelfinance (basic risk analytics) ───────────────────────────────
+import fuelfinance as ff
+
+
+# ------------------------------- Load Data (Tiingo) --------------------------------
 @st.cache_data(show_spinner=False)
 def load_data(ticker_symbol):
     """
@@ -221,11 +241,6 @@ if run_button:
     # 7️⃣ LSTM forecasting
     st.subheader("🤖 LSTM Forecast")
 
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense, Dropout
-    from sklearn.preprocessing import MinMaxScaler
-    from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
-
     feature_scaler = MinMaxScaler()
     target_scaler  = MinMaxScaler()
     X_scaled = feature_scaler.fit_transform(X_all)
@@ -342,4 +357,31 @@ if run_button:
     ax2.legend()
     st.pyplot(fig2)
 
-    # 11️⃣ Fuel
+    # 11️⃣ Fuelfinance risk analytics
+    st.subheader("💼 Fuelfinance Risk Analytics")
+    hist    = df.set_index("date")["close"]
+    returns = hist.pct_change().dropna()
+    sharpe        = ff.sharpe_ratio(returns, rf=0.0, period="daily")
+    volatility_nm = ff.volatility(returns, period="daily")
+    max_dd        = ff.max_drawdown(returns)
+    st.write(f"• Sharpe Ratio: {sharpe:.4f}")
+    st.write(f"• Volatility: {volatility_nm:.4%}")
+    st.write(f"• Max Drawdown: {max_dd:.2%}")
+
+    # 12️⃣ Download forecasts
+    st.subheader("🗒️ Download Data & Forecasts")
+    export_df = pd.DataFrame({
+        "date":              future_dates,
+        "prophet_forecast":  prophet_vals,
+        "lstm_forecast":     lstm_forecasts,
+        "ensemble_forecast": ensemble_forecast
+    })
+    export_csv = export_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download future forecasts as CSV",
+        data=export_csv,
+        file_name=f"{ticker}_future_forecast.csv",
+        mime="text/csv"
+    )
+
+    st.success("✅ Forecasting complete!")
