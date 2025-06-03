@@ -6,6 +6,7 @@ import numpy as np
 import yfinance as yf
 import datetime
 import matplotlib.pyplot as plt
+import requests
 
 # --- Technical indicators ---
 from ta.momentum import RSIIndicator
@@ -25,27 +26,69 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 
 # --- Fuelfinance (basic risk analytics) ---
 import fuelfinance as ff
-import streamlit as st
-import requests
 
-st.title("🔍 Connectivity Check")
+# ------------------------------- Load Data --------------------------------
+@st.cache_data(show_spinner=False)
+def load_data(ticker_symbol):
+    """
+    Attempts to fetch historical data for ticker_symbol from Yahoo Finance.
+    If Yahoo returns HTTP 429, reports “rate_limited”.
+    Returns a tuple: (df, status) where status is one of:
+      - "ok"           → df contains real data
+      - "rate_limited" → Yahoo returned 429 or yfinance produced no rows
+      - "error"        → some other exception occurred
+    """
+    import pandas as pd
+    import yfinance as yf
+    import requests
 
-try:
-    r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/AAPL", timeout=5)
-    if r.status_code == 200:
-        st.success("✅ Able to reach Yahoo Finance API!")
-    else:
-        st.error(f"❌ Yahoo Finance returned status code {r.status_code}")
-except Exception as e:
-    st.error(f"❌ Could not reach Yahoo Finance: {e}")
+    t = ticker_symbol.strip().upper()
+    if not t:
+        return pd.DataFrame(), "error"
 
-st.stop()  # Stop here for now; we just want to see the connectivity result
+    # 1) Quick pre-check via requests.get to detect HTTP 429
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 429:
+            # Rate-limited by Yahoo
+            return pd.DataFrame(), "rate_limited"
+    except Exception:
+        # If this simple GET fails, ignore and let yfinance attempt the fetch
+        pass
 
-# ---------------------------- UI SETUP ----------------------------
+    # 2) Use yfinance to download max history
+    try:
+        ticker_obj = yf.Ticker(t)
+        df = ticker_obj.history(period="max")
+        df.reset_index(inplace=True)
+        df.rename(
+            columns={
+                "Date":   "date",
+                "Close":  "close",
+                "Open":   "open",
+                "High":   "high",
+                "Low":    "low",
+                "Volume": "volume",
+            },
+            inplace=True
+        )
+    except Exception as e:
+        print(f"yfinance exception for {t}: {e}")
+        return pd.DataFrame(), "error"
+
+    # 3) If yfinance returned an empty DataFrame, treat it as rate-limited/no data
+    if df.empty:
+        return pd.DataFrame(), "rate_limited"
+
+    # 4) Otherwise, return the real DataFrame
+    return df, "ok"
+
+# ---------------------------- UI SETUP -----------------------------------
 st.set_page_config(page_title="AI Forecast App", layout="wide")
 st.title("📈 AI Forecast App by Zachary2562")
 
-# ─── Sidebar: Mode Selection ────────────────────────────────────────
+# ─── Sidebar: Mode Selection ─────────────────────────────────────────────
 st.sidebar.header("⚙️ Mode Selection")
 mode = st.sidebar.radio(
     "Choose mode",
@@ -54,10 +97,8 @@ mode = st.sidebar.radio(
     help="Regular: use default hyperparameters. Advanced: tweak everything manually."
 )
 
-# ─── Sidebar: Ticker Dropdown & Search ─────────────────────────────
+# ─── Sidebar: Ticker Dropdown & Search ─────────────────────────────────
 st.sidebar.header("🔍 Select or Search a Ticker")
-
-# Preloaded list of ~50 popular tickers
 PRELOADED_TICKERS = [
     "AAPL", "MSFT", "GOOG", "AMZN", "FB", "TSLA", "NVDA", "BRK-B", "JPM", "V",
     "UNH", "HD", "PG", "MA", "BAC", "XOM", "DIS", "VZ", "ADBE", "NFLX",
@@ -82,11 +123,11 @@ if custom_ticker:
 else:
     ticker = selected_dropdown
 
-# ─── Sidebar: Date Range (fixed) ────────────────────────────────────
+# ─── Sidebar: Date Range (fixed) ────────────────────────────────────────
 START_DATE = "2010-01-01"
 END_DATE = datetime.date.today().strftime("%Y-%m-%d")
 
-# ─── Sidebar: LSTM Hyperparameters ─────────────────────────────────
+# ─── Sidebar: LSTM Hyperparameters ─────────────────────────────────────
 if mode == "Regular":
     n_lstm_layers = 1
     lstm_units    = 64
@@ -107,61 +148,48 @@ else:
     batch_size    = st.sidebar.selectbox("Batch size", [16, 32, 64], index=1)
     epochs        = st.sidebar.number_input("Epochs", min_value=5, max_value=100, value=25, step=5)
 
-# ─── Sidebar: Forecast Horizon ──────────────────────────────────────
+# ─── Sidebar: Forecast Horizon ─────────────────────────────────────────
 st.sidebar.subheader("📆 Forecast Settings")
 forecast_years = st.sidebar.slider("Years to forecast into future", 1, 5, 1)
 forecast_days  = forecast_years * 252  # Approximate trading days per year
 
-# ─── Sidebar: Run Button ───────────────────────────────────────────
+# ─── Sidebar: Run Button ───────────────────────────────────────────────
 run_button = st.sidebar.button("▶ Run Forecast")
 
+# ─── Main: Run Forecast Pipeline ───────────────────────────────────────
 if run_button:
 
-    @st.cache_data(show_spinner=False)
-    def load_data(ticker_symbol):
-        df = yf.download(
-            ticker_symbol,
-            start=START_DATE,
-            end=END_DATE,
-            progress=False
-        )
-        df.reset_index(inplace=True)
-        df.rename(
-            columns={
-                "Date":   "date",
-                "Close":  "close",
-                "Open":   "open",
-                "High":   "high",
-                "Low":    "low",
-                "Volume": "volume"
-            },
-            inplace=True
-        )
-        return df
-
-    # 1️⃣ Load historical data
+    # 1️⃣ Load historical data with 429 handling
     data_load_state = st.text("Loading data...")
-    df = load_data(ticker)
-    data_load_state.text(f"Data loaded successfully! ({len(df)} rows)")
+    df, status = load_data(ticker)
 
-    if df.empty:
-        st.error(f"No data found for ticker “{ticker}”. Please check the symbol and try again.")
+    if status == "rate_limited":
+        st.error(
+            "⚠️ Yahoo Finance is rate-limiting requests (HTTP 429).  \n"
+            "Please wait 1–2 minutes, then click ‘Run Forecast’ again."
+        )
         st.stop()
+
+    if status == "error":
+        st.error(
+            f"❌ An error occurred fetching data for “{ticker}”.  \n"
+            "Check your ticker symbol or your internet connection."
+        )
+        st.stop()
+
+    # At this point, status == "ok" and df is non-empty
+    data_load_state.text(f"Data loaded successfully! ({len(df)} rows)")
 
     # 2️⃣ Compute technical indicators
     st.subheader("🔧 Computing Technical Indicators")
     df_ind = df.copy()
-    # RSI
     df_ind["rsi"] = RSIIndicator(close=df_ind["close"], window=14).rsi()
-    # MACD
     macd = MACD(close=df_ind["close"], window_slow=26, window_fast=12, window_sign=9)
     df_ind["macd"] = macd.macd_diff()
-    # Bollinger Bands (20-day, 2 std)
     bb = BollingerBands(close=df_ind["close"], window=20, window_dev=2)
     df_ind["bb_hband"] = bb.bollinger_hband()
     df_ind["bb_lband"] = bb.bollinger_lband()
     df_ind["bb_mavg"]  = bb.bollinger_mavg()
-    # VWAP (requires high, low, close, volume)
     df_ind["vwap"] = VolumeWeightedAveragePrice(
         high=df_ind["high"],
         low=df_ind["low"],
@@ -173,7 +201,7 @@ if run_button:
     df_ind.dropna(inplace=True)
     st.success(f"Technical indicators computed. ({len(df_ind):,} rows)")
 
-    # 3️⃣ Show a preview
+    # 3️⃣ Show a preview of the processed DataFrame
     st.dataframe(
         df_ind[[
             "date","open","high","low","close","volume",
@@ -190,7 +218,7 @@ if run_button:
     X_all = df_ind[feature_cols].values
     y_all = df_ind["close"].values  # 1D array of closing prices
 
-    # 5️⃣ Train-test split (last 10% as test)
+    # 5️⃣ Train-test split (last 10% as test set)
     split_idx = int(len(X_all) * 0.9)
     X_train, X_test = X_all[:split_idx], X_all[split_idx:]
     y_train, y_test = y_all[:split_idx], y_all[split_idx:]
@@ -213,14 +241,12 @@ if run_button:
     # 7️⃣ LSTM forecasting
     st.subheader("🤖 LSTM Forecast")
 
-    # Scale features and target
     feature_scaler = MinMaxScaler()
     target_scaler  = MinMaxScaler()
     X_scaled = feature_scaler.fit_transform(X_all)
     y_scaled = target_scaler.fit_transform(y_all.reshape(-1,1))
 
-    # Create sequences (lookback window)
-    LOOKBACK = 60  # last 60 days to predict next
+    LOOKBACK = 60  # last 60 days used to predict next day
     def create_sequences(X, y, lookback):
         X_seq, y_seq = [], []
         for i in range(lookback, len(X)):
@@ -230,14 +256,13 @@ if run_button:
 
     X_seq_all, y_seq_all = create_sequences(X_scaled, y_scaled, LOOKBACK)
 
-    # Re-split into train/test sequences
     split_seq_idx     = int(len(X_seq_all) * 0.9)
     X_seq_train       = X_seq_all[:split_seq_idx]
     X_seq_test        = X_seq_all[split_seq_idx:]
     y_seq_train       = y_seq_all[:split_seq_idx]
     y_seq_test        = y_seq_all[split_seq_idx:]
 
-    # Build LSTM model
+    # Build LSTM model according to selected hyperparameters
     model = Sequential()
     for layer_idx in range(n_lstm_layers):
         return_seq = (layer_idx < n_lstm_layers - 1)
@@ -264,7 +289,6 @@ if run_button:
     st.write(f"• LSTM architecture: {n_lstm_layers} layer(s) × {lstm_units} units, dropout={dropout_rate}")
     st.write(f"• Batch size: {batch_size}, Epochs: {epochs}")
 
-    # Train LSTM with EarlyStopping
     early_stop = tf.keras.callbacks.EarlyStopping(
         monitor="val_loss",
         patience=5,
@@ -281,7 +305,7 @@ if run_button:
     )
     st.success("LSTM model trained.")
 
-    # Forecast future with LSTM
+    # Forecast future with LSTM (iterative)
     last_sequence = X_scaled[-LOOKBACK:].reshape(1, LOOKBACK, len(feature_cols))
     lstm_forecasts_scaled = []
     cur_seq = last_sequence.copy()
@@ -289,7 +313,7 @@ if run_button:
     for _ in range(forecast_days):
         pred_scaled = model.predict(cur_seq, verbose=0).flatten()[0]
         lstm_forecasts_scaled.append(pred_scaled)
-        # Build next sequence: reuse last features, replace close with pred_scaled
+        # Build next sequence: shift window, append new predicted value for “close”
         last_row = cur_seq[0, -1, :].copy()  # shape=(features,)
         last_row[0] = pred_scaled  # assuming “close” is the first feature; adjust if different
         next_seq = np.concatenate([cur_seq[0, 1:], last_row.reshape(1, -1)], axis=0)
@@ -299,7 +323,7 @@ if run_button:
         np.array(lstm_forecasts_scaled).reshape(-1, 1)
     ).flatten()
 
-    # 8️⃣ Combine Prophet & LSTM forecasts (average)
+    # 8️⃣ Combine Prophet & LSTM forecasts (simple average)
     prophet_vals     = prophet_forecast_df["prophet_yhat"].values[:forecast_days]
     ensemble_forecast = (prophet_vals + lstm_forecasts) / 2
 
