@@ -33,11 +33,12 @@ import fuelfinance as ff
 def load_data(ticker_symbol):
     """
     1) Try to fetch the full history (all daily data) via Alpha Vantage.
-    2) If AV rate-limits (or returns no Time Series), fall back to compact (last ~100 days).
+    2) If that call returns anything other than "ok" (rate_limited or error),
+       fall back to compact (≈ last 100 days).
     Returns (df, status):
       - status == "ok"      → df contains full history (all available bars).
-      - status == "partial" → full was rate-limited, df contains ~100 most recent days.
-      - status == "error"   → network/API key error or invalid symbol.
+      - status == "partial" → full was rate-limited or errored, df contains ~100 most recent days.
+      - status == "error"   → both full and compact failed (network/API key error or invalid symbol).
     """
     import pandas as pd
     import requests
@@ -51,9 +52,9 @@ def load_data(ticker_symbol):
     if not API_KEY:
         return pd.DataFrame(), "error"
 
-    def _fetch(alpha_outputsize: str):
+    def _fetch(outputsize_flag: str):
         """
-        Internal helper: call Alpha Vantage with outputsize = "full" or "compact".
+        Internal helper: call Alpha Vantage with outputsize = 'full' or 'compact'.
         Returns (df, "ok") on success,
                 (None, "rate_limited") if AV returns a "Note" or "Error Message",
                 (None, "error") on network/JSON errors.
@@ -61,16 +62,15 @@ def load_data(ticker_symbol):
         url = (
             "https://www.alphavantage.co/query?"
             f"function=TIME_SERIES_DAILY_ADJUSTED&symbol={t}"
-            f"&outputsize={alpha_outputsize}&apikey={API_KEY}"
+            f"&outputsize={outputsize_flag}&apikey={API_KEY}"
         )
         try:
             r = requests.get(url, timeout=10)
             data = r.json()
         except Exception as e:
-            print(f"[AlphaV Fetch Error] {t} ({alpha_outputsize}): {e}")
+            print(f"[AlphaV Fetch Error] {t} ({outputsize_flag}): {e}")
             return None, "error"
 
-        # If AV returns a rate-limit note or invalid ticker message:
         if "Note" in data or "Error Message" in data or "Time Series (Daily)" not in data:
             return None, "rate_limited"
 
@@ -96,15 +96,12 @@ def load_data(ticker_symbol):
     if status_full == "ok":
         return df_full, "ok"
 
-    # 2) If FULL was rate-limited, fall back to COMPACT (~100 days)
-    if status_full == "rate_limited":
-        df_compact, status_compact = _fetch("compact")
-        if status_compact == "ok":
-            return df_compact, "partial"
-        else:
-            return pd.DataFrame(), "error"
+    # 2) If FULL was rate-limited or errored, fall back to COMPACT (~100 days)
+    df_compact, status_compact = _fetch("compact")
+    if status_compact == "ok":
+        return df_compact, "partial"
 
-    # 3) If FULL itself errored (network/API key), return error
+    # 3) If both full and compact failed, return error
     return pd.DataFrame(), "error"
 
 
@@ -193,7 +190,7 @@ if run_button:
 
     if status == "partial":
         st.warning(
-            "⚠️ Full historical data was rate-limited.  \n"
+            "⚠️ Full historical data was rate-limited or errored.  \n"
             "Displaying the last ~100 trading days only."
         )
         st.success(f"Loaded {len(df)} rows (compact).")
