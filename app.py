@@ -27,19 +27,21 @@ from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 # --- Fuelfinance (basic risk analytics) ---
 import fuelfinance as ff
 
+
 # ------------------------------- Load Data --------------------------------
 @st.cache_data(show_spinner=False)
 def load_data(ticker_symbol):
     """
-    Fetches full historical daily data for `ticker_symbol` via Alpha Vantage.
-    Returns:
-      - df:      Pandas DataFrame of date/open/high/low/close/volume
-      - status: "ok"           → df contains real data
-                "rate_limited" → AV returned a note or no data
-                "error"        → network or JSON parse issue
+    1) Try to fetch the full history (all daily data) via Alpha Vantage.
+    2) If AV rate-limits (or returns no Time Series), fall back to compact (last ~100 days).
+    Returns (df, status):
+      - status == "ok"      → df contains full history (all available bars).
+      - status == "partial" → full was rate-limited, df contains ~100 most recent days.
+      - status == "error"   → network/API key error or invalid symbol.
     """
     import pandas as pd
     import requests
+    import os
 
     t = ticker_symbol.strip().upper()
     if not t:
@@ -49,39 +51,62 @@ def load_data(ticker_symbol):
     if not API_KEY:
         return pd.DataFrame(), "error"
 
-    url = (
-        "https://www.alphavantage.co/query?"
-        f"function=TIME_SERIES_DAILY_ADJUSTED&symbol={t}"
-        f"&outputsize=full&apikey={API_KEY}"
-    )
+    def _fetch(alpha_outputsize: str):
+        """
+        Internal helper: call Alpha Vantage with outputsize = "full" or "compact".
+        Returns (df, "ok") on success,
+                (None, "rate_limited") if AV returns a "Note" or "Error Message",
+                (None, "error") on network/JSON errors.
+        """
+        url = (
+            "https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY_ADJUSTED&symbol={t}"
+            f"&outputsize={alpha_outputsize}&apikey={API_KEY}"
+        )
+        try:
+            r = requests.get(url, timeout=10)
+            data = r.json()
+        except Exception as e:
+            print(f"[AlphaV Fetch Error] {t} ({alpha_outputsize}): {e}")
+            return None, "error"
 
-    try:
-        r = requests.get(url, timeout=10)
-        data = r.json()
-    except Exception as e:
-        print(f"Alpha Vantage request exception for {t}: {e}")
-        return pd.DataFrame(), "error"
+        # If AV returns a rate-limit note or invalid ticker message:
+        if "Note" in data or "Error Message" in data or "Time Series (Daily)" not in data:
+            return None, "rate_limited"
 
-    # If AV responds with a "Note" field (rate‐limit) or "Error Message" (invalid symbol)
-    if "Note" in data or "Error Message" in data or "Time Series (Daily)" not in data:
-        return pd.DataFrame(), "rate_limited"
+        ts = data["Time Series (Daily)"]
+        df_temp = pd.DataFrame.from_dict(ts, orient="index", dtype=float)
+        df_temp.index = pd.to_datetime(df_temp.index)
+        df_temp.sort_index(inplace=True)
 
-    ts = data["Time Series (Daily)"]
-    df = pd.DataFrame.from_dict(ts, orient="index", dtype=float)
-    df.index = pd.to_datetime(df.index)
-    df.sort_index(inplace=True)
+        df_temp = df_temp.rename(
+            columns={
+                "1. open":   "open",
+                "2. high":   "high",
+                "3. low":    "low",
+                "4. close":  "close",
+                "6. volume": "volume",
+            }
+        )
+        df_temp = df_temp.reset_index().rename(columns={"index": "date"})
+        return df_temp, "ok"
 
-    df = df.rename(
-        columns={
-            "1. open":  "open",
-            "2. high":  "high",
-            "3. low":   "low",
-            "4. close": "close",
-            "6. volume": "volume",
-        }
-    )
-    df = df.reset_index().rename(columns={"index": "date"})
-    return df, "ok"
+    # 1) Attempt to fetch FULL history
+    df_full, status_full = _fetch("full")
+    if status_full == "ok":
+        return df_full, "ok"
+
+    # 2) If FULL was rate-limited, fall back to COMPACT (~100 days)
+    if status_full == "rate_limited":
+        df_compact, status_compact = _fetch("compact")
+        if status_compact == "ok":
+            return df_compact, "partial"
+        else:
+            return pd.DataFrame(), "error"
+
+    # 3) If FULL itself errored (network/API key), return error
+    return pd.DataFrame(), "error"
+
 
 # ---------------------------- UI SETUP -----------------------------------
 st.set_page_config(page_title="AI Forecast App", layout="wide")
@@ -106,24 +131,21 @@ PRELOADED_TICKERS = [
     "TXN", "QCOM", "NEE", "AMGN", "HON", "IBM", "BMY", "AVGO", "UNP", "SBUX"
 ]
 
-# 1) User picks from dropdown
+# 1) Dropdown select
 selected_dropdown = st.sidebar.selectbox("Pick one:", PRELOADED_TICKERS)
 
-# 2) If the desired ticker isn't in the list, allow a free-form search
+# 2) Free-form search
 custom_ticker = st.sidebar.text_input(
     "Or enter a custom ticker (e.g. AAPL)",
     value="",
     help="Type a symbol not in the dropdown."
 )
 
-# Determine which ticker to use: custom overrides dropdown if non-empty
-if custom_ticker:
-    ticker = custom_ticker.strip().upper()
-else:
-    ticker = selected_dropdown
+# Choose ticker (custom overrides dropdown if non-empty)
+ticker = custom_ticker.strip().upper() if custom_ticker else selected_dropdown
 
-# ─── Sidebar: Date Range (fixed but not used directly; kept for labeling) ─────────
-START_DATE = "2010-01-01"  # retained for UI consistency; actual fetch is "full"
+# ─── Sidebar: Date Range (for labeling) ─────────────────────────────────
+START_DATE = "2010-01-01"  # label only; actual fetch is “full” or fallback
 END_DATE = datetime.date.today().strftime("%Y-%m-%d")
 
 # ─── Sidebar: LSTM Hyperparameters ─────────────────────────────────────
@@ -158,26 +180,25 @@ run_button = st.sidebar.button("▶ Run Forecast")
 # ─── Main: Run Forecast Pipeline ───────────────────────────────────────
 if run_button:
 
-    # 1️⃣ Load historical data with Alpha Vantage (full history)
+    # 1️⃣ Load historical data via Alpha Vantage
     data_load_state = st.text("Loading data...")
     df, status = load_data(ticker)
 
-    if status == "rate_limited":
-        st.error(
-            "⚠️ Alpha Vantage is rate-limiting requests or returned no data.  \n"
-            "Please wait a minute and try again, or try a different ticker."
-        )
-        st.stop()
-
     if status == "error":
         st.error(
-            f"❌ An error occurred fetching data for “{ticker}”.  \n"
+            f"❌ Could not fetch data for “{ticker}”.  \n"
             "Check your AV_API_KEY or network connection."
         )
         st.stop()
 
-    # At this point, status == "ok" and df contains full history
-    data_load_state.text(f"Data loaded successfully! ({len(df)} rows)")
+    if status == "partial":
+        st.warning(
+            "⚠️ Full historical data was rate-limited.  \n"
+            "Displaying the last ~100 trading days only."
+        )
+        st.success(f"Loaded {len(df)} rows (compact).")
+    else:  # status == "ok"
+        st.success(f"Data loaded successfully! ({len(df)} rows of full history)")
 
     # 2️⃣ Compute technical indicators
     st.subheader("🔧 Computing Technical Indicators")
@@ -313,7 +334,7 @@ if run_button:
         pred_scaled = model.predict(cur_seq, verbose=0).flatten()[0]
         lstm_forecasts_scaled.append(pred_scaled)
         # Build next sequence: shift window, append new predicted value for “close”
-        last_row = cur_seq[0, -1, :].copy()  # shape=(features,)
+        last_row = cur_seq[0, -1, :].copy()
         last_row[0] = pred_scaled  # assuming “close” is the first feature
         next_seq = np.concatenate([cur_seq[0, 1:], last_row.reshape(1, -1)], axis=0)
         cur_seq = next_seq.reshape(1, LOOKBACK, len(feature_cols))
@@ -372,9 +393,9 @@ if run_button:
     # 12️⃣ Data export options
     st.subheader("🗒️ Download Data & Forecasts")
     export_df = pd.DataFrame({
-        "date":             future_dates,
-        "prophet_forecast": prophet_vals,
-        "lstm_forecast":    lstm_forecasts,
+        "date":              future_dates,
+        "prophet_forecast":  prophet_vals,
+        "lstm_forecast":     lstm_forecasts,
         "ensemble_forecast": ensemble_forecast
     })
     export_csv = export_df.to_csv(index=False).encode("utf-8")
