@@ -12,6 +12,9 @@ import numpy as np
 import datetime
 import matplotlib.pyplot as plt
 import requests
+import os
+print("WORKING DIRECTORY:", os.getcwd())
+print("FILES IN THIS DIR:", os.listdir(os.getcwd()))
 
 # ── TA technical indicators ───────────────────────────────────────────
 from ta.momentum import RSIIndicator
